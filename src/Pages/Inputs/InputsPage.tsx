@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { DEFAULT_INPUTS } from "./types";
-import type { QuarterlyInputs } from "./types";
-import { fetchLatestInputs, saveInputsToMongo } from "./API";
+import type { QuarterlyInputs, QuarterInputs } from "./types";
+import { DEFAULT_QUARTER_INPUTS } from "./types";
+import { save4QuartersToMongo } from "./api";
 import {
     validateInputs,
     toNumberOrNull,
@@ -22,48 +22,42 @@ function calcPreview(inputs: QuarterlyInputs) {
     return { e, w, f, total };
 }
 
+type QKey = keyof QuarterInputs; // "q1" | "q2" | "q3" | "q4"
+
+const QUARTER_LABELS: Record<QKey, string> = {
+    q1: "1st Quarter (Q1)",
+    q2: "2nd Quarter (Q2)",
+    q3: "3rd Quarter (Q3)",
+    q4: "4th Quarter (Q4)",
+};
+
 export default function InputsPage() {
     const navigate = useNavigate();
 
-    const [inputs, setInputs] = useState<QuarterlyInputs>(DEFAULT_INPUTS);
-    const [loadingLatest, setLoadingLatest] = useState(false);
+    const [company, setCompany] = useState("");
+    const [quarters, setQuarters] = useState<QuarterInputs>(
+        DEFAULT_QUARTER_INPUTS
+    );
+
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string>("");
     const [success, setSuccess] = useState<string>("");
 
-    const preview = useMemo(() => calcPreview(inputs), [inputs]);
-
-    // Auto-load latest saved values (optional but helpful)
-    useEffect(() => {
-        (async () => {
-            try {
-                setLoadingLatest(true);
-                const latest = await fetchLatestInputs();
-                if (latest?.inputs) {
-                    setInputs({
-                        electricity: {
-                            usage: latest.inputs.electricity.usage,
-                            amountPaid: latest.inputs.electricity.amountPaid,
-                        },
-                        water: {
-                            usage: latest.inputs.water.usage,
-                            amountPaid: latest.inputs.water.amountPaid,
-                        },
-                        fuel: {
-                            usage: latest.inputs.fuel.usage,
-                            amountPaid: latest.inputs.fuel.amountPaid,
-                        },
-                    });
-                }
-            } catch (e: any) {
-                // don’t hard-fail the page if no latest exists
-            } finally {
-                setLoadingLatest(false);
-            }
-        })();
-    }, []);
+    const previews = useMemo(() => {
+        const p1 = calcPreview(quarters.q1);
+        const p2 = calcPreview(quarters.q2);
+        const p3 = calcPreview(quarters.q3);
+        const p4 = calcPreview(quarters.q4);
+        const yearlyTotal =
+            (p1.total ?? 0) +
+            (p2.total ?? 0) +
+            (p3.total ?? 0) +
+            (p4.total ?? 0);
+        return { q1: p1, q2: p2, q3: p3, q4: p4, yearlyTotal };
+    }, [quarters]);
 
     function updateField(
+        q: QKey,
         key: keyof QuarterlyInputs,
         field: "usage" | "amountPaid",
         value: string
@@ -72,17 +66,22 @@ export default function InputsPage() {
         setError("");
 
         const parsed = value === "" ? "" : Number(value);
-        setInputs((prev) => ({
+
+        setQuarters((prev) => ({
             ...prev,
-            [key]: {
-                ...prev[key],
-                [field]: parsed,
+            [q]: {
+                ...prev[q],
+                [key]: {
+                    ...prev[q][key],
+                    [field]: parsed,
+                },
             },
         }));
     }
 
     function onClear() {
-        setInputs(DEFAULT_INPUTS);
+        setCompany("");
+        setQuarters(DEFAULT_QUARTER_INPUTS);
         setError("");
         setSuccess("");
     }
@@ -91,19 +90,27 @@ export default function InputsPage() {
         setError("");
         setSuccess("");
 
-        const err = validateInputs(inputs);
-        if (err) {
-            setError(err);
+        if (!company.trim()) {
+            setError("Please enter a company/clinic name.");
             return;
+        }
+
+        // validate each quarter using your existing validator
+        const order: QKey[] = ["q1", "q2", "q3", "q4"];
+        for (const q of order) {
+            const err = validateInputs(quarters[q]);
+            if (err) {
+                setError(`${QUARTER_LABELS[q]}: ${err}`);
+                return;
+            }
         }
 
         try {
             setSaving(true);
-            const id = await saveInputsToMongo(inputs);
+            const id = await save4QuartersToMongo(company.trim(), quarters);
             sessionStorage.setItem("latest_input_id", id);
             setSuccess(`Saved! (id: ${id})`);
 
-            // Navigate to outputs page if you want immediately
             navigate("/outputs");
         } catch (e: any) {
             setError(e?.message ?? "Failed to save");
@@ -113,17 +120,12 @@ export default function InputsPage() {
     }
 
     return (
-        <div style={{ maxWidth: 900, margin: "0 auto", padding: 24 }}>
-            <h1>Quarterly Inputs (3 months)</h1>
+        <div style={{ maxWidth: 980, margin: "0 auto", padding: 24 }}>
+            <h1>Yearly Inputs (4 quarters)</h1>
             <p>
-                Enter clinic resource usage and how much you paid this quarter.
+                Enter resource usage + amount paid for each quarter for one
+                company/clinic.
             </p>
-
-            {loadingLatest && (
-                <div style={{ marginBottom: 12, opacity: 0.8 }}>
-                    Loading latest saved inputs...
-                </div>
-            )}
 
             {error && (
                 <div
@@ -149,74 +151,67 @@ export default function InputsPage() {
                 </div>
             )}
 
+            <div style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                    Company / Clinic
+                </div>
+                <input
+                    value={company}
+                    onChange={(e) => setCompany(e.target.value)}
+                    placeholder="e.g., Sunrise Community Clinic"
+                    style={{ width: "100%", padding: 10 }}
+                />
+            </div>
+
+            <QuarterSection
+                title={QUARTER_LABELS.q1}
+                inputs={quarters.q1}
+                previewTotal={previews.q1.total}
+                onChange={(key, field, value) =>
+                    updateField("q1", key, field, value)
+                }
+            />
+
+            <QuarterSection
+                title={QUARTER_LABELS.q2}
+                inputs={quarters.q2}
+                previewTotal={previews.q2.total}
+                onChange={(key, field, value) =>
+                    updateField("q2", key, field, value)
+                }
+            />
+
+            <QuarterSection
+                title={QUARTER_LABELS.q3}
+                inputs={quarters.q3}
+                previewTotal={previews.q3.total}
+                onChange={(key, field, value) =>
+                    updateField("q3", key, field, value)
+                }
+            />
+
+            <QuarterSection
+                title={QUARTER_LABELS.q4}
+                inputs={quarters.q4}
+                previewTotal={previews.q4.total}
+                onChange={(key, field, value) =>
+                    updateField("q4", key, field, value)
+                }
+            />
+
             <div
                 style={{
-                    border: "1px solid #ccc",
+                    marginTop: 18,
+                    border: "1px solid #eee",
                     borderRadius: 10,
-                    padding: 16,
+                    padding: 14,
                 }}
             >
-                <div
-                    style={{
-                        display: "grid",
-                        gridTemplateColumns: "220px 1fr 1fr",
-                        gap: 12,
-                        fontWeight: 700,
-                    }}
-                >
-                    <div>Category</div>
-                    <div>Usage (Quarter)</div>
-                    <div>Amount Paid (Quarter)</div>
+                <div style={{ fontWeight: 700 }}>
+                    Yearly Total Spend Preview
                 </div>
-
-                <Row
-                    label="Electricity"
-                    hint="kWh"
-                    usage={inputs.electricity.usage}
-                    paid={inputs.electricity.amountPaid}
-                    onUsage={(v) => updateField("electricity", "usage", v)}
-                    onPaid={(v) => updateField("electricity", "amountPaid", v)}
-                />
-
-                <Row
-                    label="Water"
-                    hint="gallons (or liters)"
-                    usage={inputs.water.usage}
-                    paid={inputs.water.amountPaid}
-                    onUsage={(v) => updateField("water", "usage", v)}
-                    onPaid={(v) => updateField("water", "amountPaid", v)}
-                />
-
-                <Row
-                    label="Fuel"
-                    hint="gallons (or miles)"
-                    usage={inputs.fuel.usage}
-                    paid={inputs.fuel.amountPaid}
-                    onUsage={(v) => updateField("fuel", "usage", v)}
-                    onPaid={(v) => updateField("fuel", "amountPaid", v)}
-                />
-
-                <div
-                    style={{
-                        marginTop: 18,
-                        paddingTop: 14,
-                        borderTop: "1px solid #eee",
-                    }}
-                >
-                    <b>Quarterly Spend Preview:</b>
-                    <div
-                        style={{
-                            display: "flex",
-                            gap: 12,
-                            flexWrap: "wrap",
-                            marginTop: 10,
-                        }}
-                    >
-                        <Stat label="Electricity" value={preview.e} />
-                        <Stat label="Water" value={preview.w} />
-                        <Stat label="Fuel" value={preview.f} />
-                        <Stat label="Total" value={preview.total} />
-                    </div>
+                <div style={{ marginTop: 6, fontSize: 18, fontWeight: 800 }}>
+                    ${previews.yearlyTotal.toFixed(2)}
                 </div>
             </div>
 
@@ -227,6 +222,85 @@ export default function InputsPage() {
                 <button onClick={onSave} disabled={saving}>
                     {saving ? "Saving..." : "Save & Continue"}
                 </button>
+            </div>
+        </div>
+    );
+}
+
+function QuarterSection(props: {
+    title: string;
+    inputs: QuarterlyInputs;
+    previewTotal: number | null;
+    onChange: (
+        key: keyof QuarterlyInputs,
+        field: "usage" | "amountPaid",
+        value: string
+    ) => void;
+}) {
+    return (
+        <div
+            style={{
+                border: "1px solid #ccc",
+                borderRadius: 10,
+                padding: 16,
+                marginTop: 16,
+            }}
+        >
+            <h2 style={{ marginTop: 0 }}>{props.title}</h2>
+
+            <div
+                style={{
+                    display: "grid",
+                    gridTemplateColumns: "220px 1fr 1fr",
+                    gap: 12,
+                    fontWeight: 700,
+                }}
+            >
+                <div>Category</div>
+                <div>Usage (Quarter)</div>
+                <div>Amount Paid (Quarter)</div>
+            </div>
+
+            <Row
+                label="Electricity"
+                hint="kWh"
+                usage={props.inputs.electricity.usage}
+                paid={props.inputs.electricity.amountPaid}
+                onUsage={(v) => props.onChange("electricity", "usage", v)}
+                onPaid={(v) => props.onChange("electricity", "amountPaid", v)}
+            />
+
+            <Row
+                label="Water"
+                hint="gallons (or liters)"
+                usage={props.inputs.water.usage}
+                paid={props.inputs.water.amountPaid}
+                onUsage={(v) => props.onChange("water", "usage", v)}
+                onPaid={(v) => props.onChange("water", "amountPaid", v)}
+            />
+
+            <Row
+                label="Fuel"
+                hint="gallons (or miles)"
+                usage={props.inputs.fuel.usage}
+                paid={props.inputs.fuel.amountPaid}
+                onUsage={(v) => props.onChange("fuel", "usage", v)}
+                onPaid={(v) => props.onChange("fuel", "amountPaid", v)}
+            />
+
+            <div
+                style={{
+                    marginTop: 14,
+                    paddingTop: 12,
+                    borderTop: "1px solid #eee",
+                }}
+            >
+                <b>Quarter Spend Preview:</b>{" "}
+                <span style={{ fontWeight: 800 }}>
+                    {props.previewTotal === null
+                        ? "—"
+                        : `$${props.previewTotal.toFixed(2)}`}
+                </span>
             </div>
         </div>
     );
@@ -268,23 +342,6 @@ function Row(props: {
                 value={props.paid}
                 onChange={(e) => props.onPaid(e.target.value)}
             />
-        </div>
-    );
-}
-
-function Stat({ label, value }: { label: string; value: number | null }) {
-    const shown = value === null ? "—" : `$${value.toFixed(2)}`;
-    return (
-        <div
-            style={{
-                border: "1px solid #eee",
-                borderRadius: 10,
-                padding: 10,
-                minWidth: 160,
-            }}
-        >
-            <div style={{ fontSize: 12, opacity: 0.7 }}>{label}</div>
-            <div style={{ fontSize: 18, fontWeight: 700 }}>{shown}</div>
         </div>
     );
 }
