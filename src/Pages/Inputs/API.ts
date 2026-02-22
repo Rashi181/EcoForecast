@@ -1,4 +1,9 @@
-import type { InputsDoc, QuarterlyInputs } from "./types";
+import type {
+    InputsDoc,
+    QuarterlyInputs,
+    InputsDoc4Q,
+    QuarterInputs,
+} from "./types";
 
 const BASE_URL = "http://localhost:5000";
 
@@ -57,4 +62,51 @@ export async function fetchInputsById(id: string): Promise<InputsDoc> {
     }
 
     return data.data as InputsDoc;
+}
+
+export async function save4QuartersToMongo(
+    company: string,
+    quarters: QuarterInputs,
+    year?: number
+) {
+    const normalize = (q: QuarterlyInputs) => ({
+        electricity: {
+            usage: Number(q.electricity.usage),
+            amountPaid: Number(q.electricity.amountPaid),
+        },
+        water: {
+            usage: Number(q.water.usage),
+            amountPaid: Number(q.water.amountPaid),
+        },
+        fuel: {
+            usage: Number(q.fuel.usage),
+            amountPaid: Number(q.fuel.amountPaid),
+        },
+    });
+
+    const payload = {
+        period: "four-quarter",
+        company,
+        year: year ?? new Date().getFullYear(),
+        quarters: {
+            q1: normalize(quarters.q1),
+            q2: normalize(quarters.q2),
+            q3: normalize(quarters.q3),
+            q4: normalize(quarters.q4),
+        },
+    };
+
+    const res = await fetch(`${BASE_URL}/api/inputs/four-quarter`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Failed to save 4-quarter inputs");
+    }
+
+    return data.id as string;
 }
